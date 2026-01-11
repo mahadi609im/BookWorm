@@ -73,6 +73,39 @@ async function run() {
     app.get('/genres', async (req, res) => {
       res.send(await genresCollection.find().toArray());
     });
+
+    // --- 4. User: Library/Shelf Management ---
+    app.patch('/users/shelf', async (req, res) => {
+      const { email, bookId, shelfType, progress } = req.body;
+      // Note: Normal vabe check korar jonno ekhane body theke email nilam
+
+      const updateDoc = {
+        $set: {
+          [`shelves.${bookId}`]: { shelfType, progress, updatedAt: new Date() },
+        },
+      };
+      const result = await usersCollection.updateOne({ email }, updateDoc);
+      res.send(result);
+    });
+
+    // --- 5. Reviews Management ---
+    app.post('/reviews', async (req, res) => {
+      const review = {
+        ...req.body,
+        status: 'pending',
+        createdAt: new Date(),
+      };
+      const result = await reviewsCollection.insertOne(review);
+      res.send(result);
+    });
+
+    app.patch('/reviews/approve/:id', async (req, res) => {
+      const result = await reviewsCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { status: 'approved' } }
+      );
+      res.send(result);
+    });
   } finally {
     // client.close() kora jabe na jate connection thake
   }
