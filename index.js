@@ -106,6 +106,39 @@ async function run() {
       );
       res.send(result);
     });
+
+    // --- 6. Recommendations Logic ---
+    app.get('/recommendations/:email', async (req, res) => {
+      const email = req.params.email;
+      const user = await usersCollection.findOne({ email });
+
+      if (!user || !user.shelves) {
+        // Fallback: Jodi user na thake ba shelf khali thake
+        const popularBooks = await booksCollection.find().limit(12).toArray();
+        return res.send(popularBooks);
+      }
+
+      const userReadBooks = Object.values(user.shelves).filter(
+        b => b.shelfType === 'read'
+      );
+
+      let query = {};
+      if (userReadBooks.length > 0) {
+        const preferredGenres = [...new Set(userReadBooks.map(b => b.genre))];
+        query = { genre: { $in: preferredGenres } };
+      }
+
+      const recommendations = await booksCollection
+        .find(query)
+        .limit(12)
+        .toArray();
+      res.send(recommendations);
+    });
+
+    // --- 7. Tutorials ---
+    app.get('/tutorials', async (req, res) => {
+      res.send(await tutorialsCollection.find().toArray());
+    });
   } finally {
     // client.close() kora jabe na jate connection thake
   }
