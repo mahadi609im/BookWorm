@@ -40,6 +40,29 @@ async function run() {
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
+
+    // --- 2. Book Management ---
+    app.post('/books', async (req, res) => {
+      const result = await booksCollection.insertOne(req.body);
+      res.send(result);
+    });
+
+    app.get('/books', async (req, res) => {
+      const { search, genre } = req.query;
+      let query = {};
+      if (search) query.title = { $regex: search, $options: 'i' };
+      if (genre) query.genre = genre;
+
+      const result = await booksCollection.find(query).toArray();
+      res.send(result);
+    });
+
+    app.delete('/books/:id', async (req, res) => {
+      const result = await booksCollection.deleteOne({
+        _id: new ObjectId(req.params.id),
+      });
+      res.send(result);
+    });
   } finally {
     // client.close() kora jabe na jate connection thake
   }
