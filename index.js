@@ -63,6 +63,16 @@ async function run() {
       });
       res.send(result);
     });
+
+    // --- 3. Genre Management ---
+    app.post('/genres', async (req, res) => {
+      const result = await genresCollection.insertOne(req.body);
+      res.send(result);
+    });
+
+    app.get('/genres', async (req, res) => {
+      res.send(await genresCollection.find().toArray());
+    });
   } finally {
     // client.close() kora jabe na jate connection thake
   }
