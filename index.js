@@ -91,6 +91,22 @@ async function run() {
       );
     });
 
+    // Profile update
+
+    app.patch('/users/update/:email', async (req, res) => {
+      const email = req.params.email;
+      const { displayName, photoURL } = req.body;
+      const filter = { email: email };
+      const updateDoc = {
+        $set: {
+          displayName: displayName,
+          photoURL: photoURL,
+        },
+      };
+      const result = await usersCollection.updateOne(filter, updateDoc);
+      res.send(result);
+    });
+
     // ==========================================
     // 2. Book Management
     // ==========================================
@@ -130,19 +146,20 @@ async function run() {
       );
     });
 
+    // Book Update API
     app.patch('/books/:id', async (req, res) => {
       const id = req.params.id;
       const updatedData = { ...req.body };
       delete updatedData._id;
-      res.send(
-        await booksCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: updatedData }
-        )
+
+      const result = await booksCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updatedData }
       );
+      res.send(result);
     });
 
-    app.delete('/books/:id', verifyToken, verifyAdmin, async (req, res) => {
+    app.delete('/books/:id', async (req, res) => {
       try {
         const id = req.params.id;
         const query = { _id: new ObjectId(id) };
