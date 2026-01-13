@@ -29,22 +29,15 @@ async function run() {
     const tutorialsCollection = bookWormDB.collection('tutorials');
     const shelfCollection = bookWormDB.collection('shelves');
 
-    // --- 1. User Management ---
-    app.post('/users', async (req, res) => {
-      const user = req.body;
-      const query = { email: user.email };
-      const existingUser = await usersCollection.findOne(query);
-      if (existingUser) return res.send({ message: 'User already exists' });
-
-      user.role = 'user';
-      user.annualGoal = 0;
-      user.createdAt = new Date();
-      const result = await usersCollection.insertOne(user);
-      res.send(result);
-    });
-
+    // ==========================================
+    // 1. User Management
+    // ==========================================
     app.get('/users', async (req, res) => {
-      res.send(await usersCollection.find().toArray());
+      const role = req.query.role;
+      let query = {};
+      if (role && role !== 'all') query.role = role;
+      const result = await usersCollection.find(query).toArray();
+      res.send(result);
     });
 
     app.get('/users/:email', async (req, res) => {
@@ -53,16 +46,54 @@ async function run() {
       res.send(result);
     });
 
-    app.patch('/users/role/:id', async (req, res) => {
-      const { role } = req.body;
-      const result = await usersCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
-        { $set: { role } }
-      );
-      res.send(result);
+    app.post('/users', async (req, res) => {
+      const user = req.body;
+      const existingUser = await usersCollection.findOne({ email: user.email });
+      if (existingUser)
+        return res.send({ message: 'User exists', insertedId: null });
+
+      const newUser = {
+        ...user,
+        role: 'user',
+        status: 'active',
+        joined: new Date(),
+        annualGoal: 0,
+        booksReadThisYear: 0,
+        createdAt: new Date(),
+      };
+      res.send(await usersCollection.insertOne(newUser));
     });
 
-    // --- 2. Book Management (Admin & General) ---
+    app.patch('/users/role/:id', async (req, res) => {
+      const filter = { _id: new ObjectId(req.params.id) };
+      res.send(
+        await usersCollection.updateOne(filter, {
+          $set: { role: req.body.role },
+        })
+      );
+    });
+
+    app.patch('/users/status/:id', async (req, res) => {
+      const filter = { _id: new ObjectId(req.params.id) };
+      res.send(
+        await usersCollection.updateOne(filter, {
+          $set: { status: req.body.status },
+        })
+      );
+    });
+
+    app.patch('/users/goal/:email', async (req, res) => {
+      const filter = { email: req.params.email };
+      res.send(
+        await usersCollection.updateOne(filter, {
+          $set: { annualGoal: parseInt(req.body.goal) },
+        })
+      );
+    });
+
+    // ==========================================
+    // 2. Book Management
+    // ==========================================
     app.post('/books', async (req, res) => {
       const book = {
         ...req.body,
@@ -71,49 +102,44 @@ async function run() {
         averageRating: 0,
         totalReviews: 0,
       };
-      const result = await booksCollection.insertOne(book);
-      res.send(result);
+      res.send(await booksCollection.insertOne(book));
     });
 
-    // Browse Books API with Advanced Search/Filters
     app.get('/books', async (req, res) => {
       const { search, genre, sort, minRating } = req.query;
       let query = {};
-
-      if (search) {
+      if (search)
         query.$or = [
           { title: { $regex: search, $options: 'i' } },
           { author: { $regex: search, $options: 'i' } },
         ];
-      }
       if (genre) query.genre = genre;
       if (minRating) query.averageRating = { $gte: parseFloat(minRating) };
 
       let sortObj = {};
       if (sort === 'rating') sortObj = { averageRating: -1 };
-      if (sort === 'mostShelved') sortObj = { shelvedCount: -1 };
-      if (sort === 'newest') sortObj = { createdAt: -1 };
+      else if (sort === 'mostShelved') sortObj = { shelvedCount: -1 };
+      else sortObj = { createdAt: -1 };
 
-      const result = await booksCollection.find(query).sort(sortObj).toArray();
-      res.send(result);
+      res.send(await booksCollection.find(query).sort(sortObj).toArray());
     });
 
-    // Get Single Book Details (মিসিং ছিল)
     app.get('/books/:id', async (req, res) => {
-      const id = req.params.id;
-      const result = await booksCollection.findOne({ _id: new ObjectId(id) });
-      res.send(result);
+      res.send(
+        await booksCollection.findOne({ _id: new ObjectId(req.params.id) })
+      );
     });
 
     app.patch('/books/:id', async (req, res) => {
       const id = req.params.id;
-      const updatedBook = req.body;
-      delete updatedBook._id;
-      const result = await booksCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: updatedBook }
+      const updatedData = { ...req.body };
+      delete updatedData._id;
+      res.send(
+        await booksCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updatedData }
+        )
       );
-      res.send(result);
     });
 
     app.delete('/books/:id', async (req, res) => {
@@ -122,18 +148,42 @@ async function run() {
       );
     });
 
-    // --- 3. Genre Management ---
+    // ==========================================
+    // 3. Genre Management (Full CRUD)
+    // ==========================================
     app.get('/genres', async (req, res) => {
       res.send(await genresCollection.find().toArray());
     });
 
-    // --- 4. Reading Tracker & Recommendations ---
+    app.post('/genres', async (req, res) => {
+      res.send(await genresCollection.insertOne(req.body));
+    });
 
-    // User Shelf Management (Update/Add)
+    app.patch('/genres/:id', async (req, res) => {
+      const id = req.params.id;
+      const update = { ...req.body };
+      delete update._id;
+      res.send(
+        await genresCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: update }
+        )
+      );
+    });
+
+    app.delete('/genres/:id', async (req, res) => {
+      res.send(
+        await genresCollection.deleteOne({ _id: new ObjectId(req.params.id) })
+      );
+    });
+
+    // ==========================================
+    // 4. Reading Tracker & Recommendations
+    // ==========================================
     app.patch('/users/shelf', async (req, res) => {
       const { email, bookId, shelfType, progress, bookData } = req.body;
-
       const query = { userEmail: email, bookId: bookId };
+
       const updateDoc = {
         $set: {
           userEmail: email,
@@ -147,11 +197,19 @@ async function run() {
           updatedAt: new Date(),
         },
       };
+
       const result = await shelfCollection.updateOne(query, updateDoc, {
         upsert: true,
       });
 
-      // বইয়ের shelvedCount বাড়ানো (যদি নতুন অ্যাড হয়)
+      // Update Books Count & User Stats if book is marked as "Read"
+      if (shelfType === 'read') {
+        await usersCollection.updateOne(
+          { email },
+          { $inc: { booksReadThisYear: 1 } }
+        );
+      }
+
       if (result.upsertedCount > 0) {
         await booksCollection.updateOne(
           { _id: new ObjectId(bookId) },
@@ -161,86 +219,89 @@ async function run() {
       res.send(result);
     });
 
-    // ইউজারের নিজস্ব লাইব্রেরি পাওয়ার API
     app.get('/my-library/:email', async (req, res) => {
-      const email = req.params.email;
-      const result = await shelfCollection.find({ userEmail: email }).toArray();
-      res.send(result);
+      res.send(
+        await shelfCollection.find({ userEmail: req.params.email }).toArray()
+      );
     });
 
-    // Personalized Recommendations (Logic based on Genre & Ratings)
     app.get('/recommendations/:email', async (req, res) => {
       const email = req.params.email;
-      const userReadBooks = await shelfCollection
+      const userRead = await shelfCollection
         .find({ userEmail: email, shelfType: 'read' })
         .toArray();
+      const readIds = userRead.map(b => new ObjectId(b.bookId));
 
-      let query = {};
-      if (userReadBooks.length > 0) {
-        const favoriteGenres = [...new Set(userReadBooks.map(b => b.genre))];
-        query = {
-          genre: { $in: favoriteGenres },
-          _id: { $nin: userReadBooks.map(b => new ObjectId(b.bookId)) },
-        };
+      let query = { _id: { $nin: readIds } };
+      if (userRead.length >= 3) {
+        const favGenres = [...new Set(userRead.map(b => b.genre))];
+        query.genre = { $in: favGenres };
       }
 
-      // যদি পড়া বই কম থাকে, তবে হাই রেটিং বই রিকমেন্ড করবে
-      const recommended = await booksCollection
+      const result = await booksCollection
         .find(query)
         .sort({ averageRating: -1 })
         .limit(15)
         .toArray();
-      res.send(recommended);
-    });
-
-    // --- 5. Review Management ---
-    app.post('/reviews', async (req, res) => {
-      const review = { ...req.body, status: 'pending', createdAt: new Date() };
-      res.send(await reviewsCollection.insertOne(review));
-    });
-
-    // নির্দিষ্ট বইয়ের সব এপ্রুভড রিভিউ (Book Details এর জন্য)
-    app.get('/reviews/book/:bookId', async (req, res) => {
-      const result = await reviewsCollection
-        .find({
-          bookId: req.params.bookId,
-          status: 'approved',
-        })
-        .toArray();
       res.send(result);
+    });
+
+    // ==========================================
+    // 5. Review Management (with Avg Rating Logic)
+    // ==========================================
+    app.post('/reviews', async (req, res) => {
+      res.send(
+        await reviewsCollection.insertOne({
+          ...req.body,
+          status: 'pending',
+          createdAt: new Date(),
+        })
+      );
+    });
+
+    app.get('/reviews/admin', async (req, res) => {
+      res.send(
+        await reviewsCollection.find().sort({ createdAt: -1 }).toArray()
+      );
     });
 
     app.patch('/reviews/approve/:id', async (req, res) => {
       const id = req.params.id;
       const review = await reviewsCollection.findOne({ _id: new ObjectId(id) });
 
-      // এপ্রুভ করার সাথে সাথে মেইন বইয়ের এভারেজ রেটিং আপডেট করা (Bonus logic)
-      const approvedResult = await reviewsCollection.updateOne(
+      await reviewsCollection.updateOne(
         { _id: new ObjectId(id) },
         { $set: { status: 'approved' } }
       );
 
-      // ক্যালকুলেট এভারেজ রেটিং (সিম্পল লজিক)
-      const bookReviews = await reviewsCollection
+      // Recalculate Average Rating for the Book
+      const allReviews = await reviewsCollection
         .find({ bookId: review.bookId, status: 'approved' })
         .toArray();
-      const avgRating =
-        bookReviews.reduce((sum, r) => sum + r.rating, 0) / bookReviews.length;
+      const avg =
+        allReviews.reduce((acc, r) => acc + r.rating, 0) / allReviews.length;
 
       await booksCollection.updateOne(
         { _id: new ObjectId(review.bookId) },
         {
           $set: {
-            averageRating: parseFloat(avgRating.toFixed(1)),
-            totalReviews: bookReviews.length,
+            averageRating: parseFloat(avg.toFixed(1)),
+            totalReviews: allReviews.length,
           },
         }
       );
-
-      res.send(approvedResult);
+      res.send({ success: true });
     });
 
-    // --- 6. Admin & User Stats ---
+    app.delete('/reviews/:id', async (req, res) => {
+      res.send(
+        await reviewsCollection.deleteOne({ _id: new ObjectId(req.params.id) })
+      );
+    });
+
+    // ==========================================
+    // 6. Stats & Charts
+    // ==========================================
     app.get('/admin-stats', async (req, res) => {
       const totalBooks = await booksCollection.estimatedDocumentCount();
       const totalUsers = await usersCollection.estimatedDocumentCount();
@@ -253,53 +314,56 @@ async function run() {
       res.send({ totalBooks, totalUsers, pendingReviews, genreStats });
     });
 
-    // User Dashboard Stats (মিসিং ছিল)
     app.get('/user-stats/:email', async (req, res) => {
       const email = req.params.email;
-      const shelfData = await shelfCollection
+      const user = await usersCollection.findOne({ email });
+      const shelves = await shelfCollection
         .find({ userEmail: email })
         .toArray();
-      const readBooks = shelfData.filter(b => b.shelfType === 'read');
-      const readingBooks = shelfData.filter(b => b.shelfType === 'reading');
 
-      const totalPagesRead = readBooks.length * 300; // Estimated or you can take actual pages
+      const genreData = await shelfCollection
+        .aggregate([
+          { $match: { userEmail: email } },
+          { $group: { _id: '$genre', value: { $sum: 1 } } },
+        ])
+        .toArray();
+
       res.send({
-        booksRead: readBooks.length,
-        currentlyReading: readingBooks.length,
-        totalPagesRead,
-        shelfData,
+        annualGoal: user?.annualGoal || 0,
+        booksRead: user?.booksReadThisYear || 0,
+        currentlyReading: shelves.filter(s => s.shelfType === 'reading').length,
+        genreData, // For Pie Chart
       });
     });
 
-    // --- 7. Tutorials ---
-
+    // ==========================================
+    // 7. Tutorials
+    // ==========================================
     app.get('/tutorials', async (req, res) => {
-      const result = await tutorialsCollection
-        .find()
-        .sort({ _id: -1 })
-        .toArray();
-      res.send(result);
+      res.send(await tutorialsCollection.find().sort({ _id: -1 }).toArray());
     });
 
     app.post('/tutorials', async (req, res) => {
-      const tutorial = req.body;
-      tutorial.createdAt = new Date();
-      const result = await tutorialsCollection.insertOne(tutorial);
-      res.send(result);
+      res.send(
+        await tutorialsCollection.insertOne({
+          ...req.body,
+          createdAt: new Date(),
+        })
+      );
     });
 
     app.delete('/tutorials/:id', async (req, res) => {
-      const id = req.params.id;
-      const result = await tutorialsCollection.deleteOne({
-        _id: new ObjectId(id),
-      });
-      res.send(result);
+      res.send(
+        await tutorialsCollection.deleteOne({
+          _id: new ObjectId(req.params.id),
+        })
+      );
     });
   } finally {
-    // client.close() - Keep connection open
+    // Keep connection alive
   }
 }
 run().catch(console.dir);
 
-app.get('/', (req, res) => res.send('BookWorm API Server Active'));
-app.listen(port, () => console.log(`Running on port ${port}`));
+app.get('/', (req, res) => res.send('BookWorm Server is Flying! 🚀'));
+app.listen(port, () => console.log(`Server running on port ${port}`));
