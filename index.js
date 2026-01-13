@@ -142,10 +142,19 @@ async function run() {
       );
     });
 
-    app.delete('/books/:id', async (req, res) => {
-      res.send(
-        await booksCollection.deleteOne({ _id: new ObjectId(req.params.id) })
-      );
+    app.delete('/books/:id', verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const id = req.params.id;
+        const query = { _id: new ObjectId(id) };
+
+        await reviewsCollection.deleteMany({ bookId: id });
+
+        const result = await booksCollection.deleteOne(query);
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Error deleting book', error });
+      }
     });
 
     // ==========================================
@@ -300,40 +309,70 @@ async function run() {
     });
 
     // ==========================================
-    // 6. Stats & Charts
+    // 6. Stats & Charts (Public Endpoints)
     // ==========================================
+
+    // Admin Dashboard Stats: যে কেউ এই লিঙ্ক থেকে স্ট্যাটস দেখতে পারবে
     app.get('/admin-stats', async (req, res) => {
-      const totalBooks = await booksCollection.estimatedDocumentCount();
-      const totalUsers = await usersCollection.estimatedDocumentCount();
-      const pendingReviews = await reviewsCollection.countDocuments({
-        status: 'pending',
-      });
-      const genreStats = await booksCollection
-        .aggregate([{ $group: { _id: '$genre', count: { $sum: 1 } } }])
-        .toArray();
-      res.send({ totalBooks, totalUsers, pendingReviews, genreStats });
+      try {
+        const totalBooks = await booksCollection.estimatedDocumentCount();
+        const totalUsers = await usersCollection.estimatedDocumentCount();
+        const pendingReviews = await reviewsCollection.countDocuments({
+          status: 'pending',
+        });
+
+        // Genre Breakdown: চার্টের জন্য জেনার অনুযায়ী ডাটা প্রসেস
+        const genreStats = await booksCollection
+          .aggregate([
+            {
+              $group: {
+                _id: '$genre',
+                count: { $sum: 1 },
+              },
+            },
+          ])
+          .toArray();
+
+        res.send({
+          totalBooks,
+          totalUsers,
+          pendingReviews,
+          genreStats,
+        });
+      } catch (error) {
+        res.status(500).send({ message: 'Admin stats failed', error });
+      }
     });
 
+    // User Dashboard Stats: ইউজারের ইমেইল অনুযায়ী স্ট্যাটস (টোকেন ছাড়া)
     app.get('/user-stats/:email', async (req, res) => {
-      const email = req.params.email;
-      const user = await usersCollection.findOne({ email });
-      const shelves = await shelfCollection
-        .find({ userEmail: email })
-        .toArray();
+      try {
+        const email = req.params.email;
 
-      const genreData = await shelfCollection
-        .aggregate([
-          { $match: { userEmail: email } },
-          { $group: { _id: '$genre', value: { $sum: 1 } } },
-        ])
-        .toArray();
+        const user = await usersCollection.findOne({ email });
+        const shelves = await shelfCollection
+          .find({ userEmail: email })
+          .toArray();
 
-      res.send({
-        annualGoal: user?.annualGoal || 0,
-        booksRead: user?.booksReadThisYear || 0,
-        currentlyReading: shelves.filter(s => s.shelfType === 'reading').length,
-        genreData, // For Pie Chart
-      });
+        // User Genre Analytics: পাই চার্ট ডাটা
+        const genreData = await shelfCollection
+          .aggregate([
+            { $match: { userEmail: email } },
+            { $group: { _id: '$genre', value: { $sum: 1 } } },
+          ])
+          .toArray();
+
+        res.send({
+          annualGoal: user?.annualGoal || 0,
+          booksRead: user?.booksReadThisYear || 0,
+          currentlyReading: shelves.filter(
+            s => s.shelfType === 'reading' || s.shelfType === 'reading'
+          ).length,
+          genreData,
+        });
+      } catch (error) {
+        res.status(500).send({ message: 'User stats failed', error });
+      }
     });
 
     // ==========================================
