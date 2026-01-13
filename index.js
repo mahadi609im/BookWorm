@@ -47,7 +47,6 @@ async function run() {
       res.send(await usersCollection.find().toArray());
     });
 
-    // নির্দিষ্ট ইউজারের ডাটা এবং রোল পাওয়ার জন্য (Auth Context এ কাজে লাগবে)
     app.get('/users/:email', async (req, res) => {
       const email = req.params.email;
       const result = await usersCollection.findOne({ email });
@@ -273,8 +272,28 @@ async function run() {
     });
 
     // --- 7. Tutorials ---
+
     app.get('/tutorials', async (req, res) => {
-      res.send(await tutorialsCollection.find().toArray());
+      const result = await tutorialsCollection
+        .find()
+        .sort({ _id: -1 })
+        .toArray();
+      res.send(result);
+    });
+
+    app.post('/tutorials', async (req, res) => {
+      const tutorial = req.body;
+      tutorial.createdAt = new Date();
+      const result = await tutorialsCollection.insertOne(tutorial);
+      res.send(result);
+    });
+
+    app.delete('/tutorials/:id', async (req, res) => {
+      const id = req.params.id;
+      const result = await tutorialsCollection.deleteOne({
+        _id: new ObjectId(id),
+      });
+      res.send(result);
     });
   } finally {
     // client.close() - Keep connection open
