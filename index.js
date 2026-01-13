@@ -27,112 +27,249 @@ async function run() {
     const genresCollection = bookWormDB.collection('genres');
     const reviewsCollection = bookWormDB.collection('reviews');
     const tutorialsCollection = bookWormDB.collection('tutorials');
+    const shelfCollection = bookWormDB.collection('shelves');
 
-    // --- 1. User APIs ---
+    // --- 1. User Management ---
     app.post('/users', async (req, res) => {
       const user = req.body;
       const query = { email: user.email };
       const existingUser = await usersCollection.findOne(query);
-      if (existingUser) return res.send({ message: 'user already exists' });
+      if (existingUser) return res.send({ message: 'User already exists' });
 
-      user.role = 'user'; // default role
+      user.role = 'user';
+      user.annualGoal = 0;
       user.createdAt = new Date();
       const result = await usersCollection.insertOne(user);
       res.send(result);
     });
 
-    // --- 2. Book Management ---
-    app.post('/books', async (req, res) => {
-      const result = await booksCollection.insertOne(req.body);
+    app.get('/users', async (req, res) => {
+      res.send(await usersCollection.find().toArray());
+    });
+
+    // নির্দিষ্ট ইউজারের ডাটা এবং রোল পাওয়ার জন্য (Auth Context এ কাজে লাগবে)
+    app.get('/users/:email', async (req, res) => {
+      const email = req.params.email;
+      const result = await usersCollection.findOne({ email });
       res.send(result);
     });
 
-    app.get('/books', async (req, res) => {
-      const { search, genre } = req.query;
-      let query = {};
-      if (search) query.title = { $regex: search, $options: 'i' };
-      if (genre) query.genre = genre;
+    app.patch('/users/role/:id', async (req, res) => {
+      const { role } = req.body;
+      const result = await usersCollection.updateOne(
+        { _id: new ObjectId(req.params.id) },
+        { $set: { role } }
+      );
+      res.send(result);
+    });
 
-      const result = await booksCollection.find(query).toArray();
+    // --- 2. Book Management (Admin & General) ---
+    app.post('/books', async (req, res) => {
+      const book = {
+        ...req.body,
+        createdAt: new Date(),
+        shelvedCount: 0,
+        averageRating: 0,
+        totalReviews: 0,
+      };
+      const result = await booksCollection.insertOne(book);
+      res.send(result);
+    });
+
+    // Browse Books API with Advanced Search/Filters
+    app.get('/books', async (req, res) => {
+      const { search, genre, sort, minRating } = req.query;
+      let query = {};
+
+      if (search) {
+        query.$or = [
+          { title: { $regex: search, $options: 'i' } },
+          { author: { $regex: search, $options: 'i' } },
+        ];
+      }
+      if (genre) query.genre = genre;
+      if (minRating) query.averageRating = { $gte: parseFloat(minRating) };
+
+      let sortObj = {};
+      if (sort === 'rating') sortObj = { averageRating: -1 };
+      if (sort === 'mostShelved') sortObj = { shelvedCount: -1 };
+      if (sort === 'newest') sortObj = { createdAt: -1 };
+
+      const result = await booksCollection.find(query).sort(sortObj).toArray();
+      res.send(result);
+    });
+
+    // Get Single Book Details (মিসিং ছিল)
+    app.get('/books/:id', async (req, res) => {
+      const id = req.params.id;
+      const result = await booksCollection.findOne({ _id: new ObjectId(id) });
+      res.send(result);
+    });
+
+    app.patch('/books/:id', async (req, res) => {
+      const id = req.params.id;
+      const updatedBook = req.body;
+      delete updatedBook._id;
+      const result = await booksCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: updatedBook }
+      );
       res.send(result);
     });
 
     app.delete('/books/:id', async (req, res) => {
-      const result = await booksCollection.deleteOne({
-        _id: new ObjectId(req.params.id),
-      });
-      res.send(result);
+      res.send(
+        await booksCollection.deleteOne({ _id: new ObjectId(req.params.id) })
+      );
     });
 
     // --- 3. Genre Management ---
-    app.post('/genres', async (req, res) => {
-      const result = await genresCollection.insertOne(req.body);
-      res.send(result);
-    });
-
     app.get('/genres', async (req, res) => {
       res.send(await genresCollection.find().toArray());
     });
 
-    // --- 4. User: Library/Shelf Management ---
-    app.patch('/users/shelf', async (req, res) => {
-      const { email, bookId, shelfType, progress } = req.body;
-      // Note: Normal vabe check korar jonno ekhane body theke email nilam
+    // --- 4. Reading Tracker & Recommendations ---
 
+    // User Shelf Management (Update/Add)
+    app.patch('/users/shelf', async (req, res) => {
+      const { email, bookId, shelfType, progress, bookData } = req.body;
+
+      const query = { userEmail: email, bookId: bookId };
       const updateDoc = {
         $set: {
-          [`shelves.${bookId}`]: { shelfType, progress, updatedAt: new Date() },
+          userEmail: email,
+          bookId,
+          shelfType,
+          progress: progress || 0,
+          bookTitle: bookData.title,
+          cover: bookData.cover,
+          genre: bookData.genre,
+          author: bookData.author,
+          updatedAt: new Date(),
         },
       };
-      const result = await usersCollection.updateOne({ email }, updateDoc);
+      const result = await shelfCollection.updateOne(query, updateDoc, {
+        upsert: true,
+      });
+
+      // বইয়ের shelvedCount বাড়ানো (যদি নতুন অ্যাড হয়)
+      if (result.upsertedCount > 0) {
+        await booksCollection.updateOne(
+          { _id: new ObjectId(bookId) },
+          { $inc: { shelvedCount: 1 } }
+        );
+      }
       res.send(result);
     });
 
-    // --- 5. Reviews Management ---
+    // ইউজারের নিজস্ব লাইব্রেরি পাওয়ার API
+    app.get('/my-library/:email', async (req, res) => {
+      const email = req.params.email;
+      const result = await shelfCollection.find({ userEmail: email }).toArray();
+      res.send(result);
+    });
+
+    // Personalized Recommendations (Logic based on Genre & Ratings)
+    app.get('/recommendations/:email', async (req, res) => {
+      const email = req.params.email;
+      const userReadBooks = await shelfCollection
+        .find({ userEmail: email, shelfType: 'read' })
+        .toArray();
+
+      let query = {};
+      if (userReadBooks.length > 0) {
+        const favoriteGenres = [...new Set(userReadBooks.map(b => b.genre))];
+        query = {
+          genre: { $in: favoriteGenres },
+          _id: { $nin: userReadBooks.map(b => new ObjectId(b.bookId)) },
+        };
+      }
+
+      // যদি পড়া বই কম থাকে, তবে হাই রেটিং বই রিকমেন্ড করবে
+      const recommended = await booksCollection
+        .find(query)
+        .sort({ averageRating: -1 })
+        .limit(15)
+        .toArray();
+      res.send(recommended);
+    });
+
+    // --- 5. Review Management ---
     app.post('/reviews', async (req, res) => {
-      const review = {
-        ...req.body,
-        status: 'pending',
-        createdAt: new Date(),
-      };
-      const result = await reviewsCollection.insertOne(review);
+      const review = { ...req.body, status: 'pending', createdAt: new Date() };
+      res.send(await reviewsCollection.insertOne(review));
+    });
+
+    // নির্দিষ্ট বইয়ের সব এপ্রুভড রিভিউ (Book Details এর জন্য)
+    app.get('/reviews/book/:bookId', async (req, res) => {
+      const result = await reviewsCollection
+        .find({
+          bookId: req.params.bookId,
+          status: 'approved',
+        })
+        .toArray();
       res.send(result);
     });
 
     app.patch('/reviews/approve/:id', async (req, res) => {
-      const result = await reviewsCollection.updateOne(
-        { _id: new ObjectId(req.params.id) },
+      const id = req.params.id;
+      const review = await reviewsCollection.findOne({ _id: new ObjectId(id) });
+
+      // এপ্রুভ করার সাথে সাথে মেইন বইয়ের এভারেজ রেটিং আপডেট করা (Bonus logic)
+      const approvedResult = await reviewsCollection.updateOne(
+        { _id: new ObjectId(id) },
         { $set: { status: 'approved' } }
       );
-      res.send(result);
-    });
 
-    // --- 6. Recommendations Logic ---
-    app.get('/recommendations/:email', async (req, res) => {
-      const email = req.params.email;
-      const user = await usersCollection.findOne({ email });
+      // ক্যালকুলেট এভারেজ রেটিং (সিম্পল লজিক)
+      const bookReviews = await reviewsCollection
+        .find({ bookId: review.bookId, status: 'approved' })
+        .toArray();
+      const avgRating =
+        bookReviews.reduce((sum, r) => sum + r.rating, 0) / bookReviews.length;
 
-      if (!user || !user.shelves) {
-        // Fallback: Jodi user na thake ba shelf khali thake
-        const popularBooks = await booksCollection.find().limit(12).toArray();
-        return res.send(popularBooks);
-      }
-
-      const userReadBooks = Object.values(user.shelves).filter(
-        b => b.shelfType === 'read'
+      await booksCollection.updateOne(
+        { _id: new ObjectId(review.bookId) },
+        {
+          $set: {
+            averageRating: parseFloat(avgRating.toFixed(1)),
+            totalReviews: bookReviews.length,
+          },
+        }
       );
 
-      let query = {};
-      if (userReadBooks.length > 0) {
-        const preferredGenres = [...new Set(userReadBooks.map(b => b.genre))];
-        query = { genre: { $in: preferredGenres } };
-      }
+      res.send(approvedResult);
+    });
 
-      const recommendations = await booksCollection
-        .find(query)
-        .limit(12)
+    // --- 6. Admin & User Stats ---
+    app.get('/admin-stats', async (req, res) => {
+      const totalBooks = await booksCollection.estimatedDocumentCount();
+      const totalUsers = await usersCollection.estimatedDocumentCount();
+      const pendingReviews = await reviewsCollection.countDocuments({
+        status: 'pending',
+      });
+      const genreStats = await booksCollection
+        .aggregate([{ $group: { _id: '$genre', count: { $sum: 1 } } }])
         .toArray();
-      res.send(recommendations);
+      res.send({ totalBooks, totalUsers, pendingReviews, genreStats });
+    });
+
+    // User Dashboard Stats (মিসিং ছিল)
+    app.get('/user-stats/:email', async (req, res) => {
+      const email = req.params.email;
+      const shelfData = await shelfCollection
+        .find({ userEmail: email })
+        .toArray();
+      const readBooks = shelfData.filter(b => b.shelfType === 'read');
+      const readingBooks = shelfData.filter(b => b.shelfType === 'reading');
+
+      const totalPagesRead = readBooks.length * 300; // Estimated or you can take actual pages
+      res.send({
+        booksRead: readBooks.length,
+        currentlyReading: readingBooks.length,
+        totalPagesRead,
+        shelfData,
+      });
     });
 
     // --- 7. Tutorials ---
@@ -140,10 +277,10 @@ async function run() {
       res.send(await tutorialsCollection.find().toArray());
     });
   } finally {
-    // client.close() kora jabe na jate connection thake
+    // client.close() - Keep connection open
   }
 }
 run().catch(console.dir);
 
-app.get('/', (req, res) => res.send('BookWorm Normal Server Running'));
-app.listen(port, () => console.log(`Server on ${port}`));
+app.get('/', (req, res) => res.send('BookWorm API Server Active'));
+app.listen(port, () => console.log(`Running on port ${port}`));
