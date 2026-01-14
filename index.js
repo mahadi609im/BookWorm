@@ -223,6 +223,35 @@ async function run() {
       }
     });
 
+    // Update existing book (Admin Only)
+    app.patch('/books/:id', verifyAdmin, async (req, res) => {
+      try {
+        const id = req.params.id;
+        const filter = { _id: new ObjectId(id) };
+        const updatedBook = req.body;
+
+        const updateDoc = {
+          $set: {
+            title: updatedBook.title,
+            author: updatedBook.author,
+            genre: updatedBook.genre,
+            rating: parseFloat(updatedBook.rating) || 0,
+            totalPage: parseInt(updatedBook.totalPage) || 0,
+            description: updatedBook.description,
+            summary: updatedBook.summary,
+            cover: updatedBook.cover,
+            status: updatedBook.status,
+            lastUpdated: new Date(),
+          },
+        };
+
+        const result = await booksCollection.updateOne(filter, updateDoc);
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Error updating book', error });
+      }
+    });
+
     // Delete Book and its dependencies
     app.delete('/books/:id', async (req, res) => {
       try {
