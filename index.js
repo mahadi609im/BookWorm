@@ -221,6 +221,37 @@ async function run() {
       }
     });
 
+    // Admin Dashboard Stats
+    app.get('/admin-stats', async (req, res) => {
+      try {
+        const totalBooks = await booksCollection.estimatedDocumentCount();
+        const totalUsers = await usersCollection.estimatedDocumentCount();
+        const totalReviews = await reviewsCollection.countDocuments({
+          status: 'approved',
+        });
+        const pendingReviews = await reviewsCollection.countDocuments({
+          status: 'pending',
+        });
+
+        const genreStats = await booksCollection
+          .aggregate([
+            { $group: { _id: '$genre', count: { $sum: 1 } } },
+            { $limit: 6 },
+          ])
+          .toArray();
+
+        res.send({
+          totalBooks,
+          totalUsers,
+          totalReviews,
+          pendingReviews,
+          genreStats,
+        });
+      } catch (error) {
+        res.status(500).send({ message: 'Admin stats error', error });
+      }
+    });
+
     // ==========================================
     // 3. Reading Tracker (Library)
     // ==========================================
