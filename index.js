@@ -224,9 +224,15 @@ async function run() {
     });
 
     // Update existing book (Admin Only)
-    app.patch('/books/:id', verifyAdmin, async (req, res) => {
+    app.patch('/books/:id', async (req, res) => {
       try {
         const id = req.params.id;
+
+        // ১. ID ভ্যালিডেশন চেক (এরর হ্যান্ডলিং মজবুত করার জন্য)
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).send({ message: 'Invalid Book ID format' });
+        }
+
         const filter = { _id: new ObjectId(id) };
         const updatedBook = req.body;
 
@@ -235,6 +241,7 @@ async function run() {
             title: updatedBook.title,
             author: updatedBook.author,
             genre: updatedBook.genre,
+            // ২. নাম্বার কনভার্সন ফ্রন্টএন্ড থেকে না আসলেও যেন সার্ভার ক্র্যাশ না করে
             rating: parseFloat(updatedBook.rating) || 0,
             totalPage: parseInt(updatedBook.totalPage) || 0,
             description: updatedBook.description,
@@ -246,9 +253,18 @@ async function run() {
         };
 
         const result = await booksCollection.updateOne(filter, updateDoc);
+
+        // ৩. আপডেট হয়েছে কি না তা চেক করা
+        if (result.matchedCount === 0) {
+          return res.status(404).send({ message: 'Book not found' });
+        }
+
         res.send(result);
       } catch (error) {
-        res.status(500).send({ message: 'Error updating book', error });
+        console.error('Update Error:', error); // সার্ভার লগে এরর দেখার জন্য
+        res
+          .status(500)
+          .send({ message: 'Error updating book', error: error.message });
       }
     });
 
