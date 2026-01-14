@@ -9,6 +9,23 @@ const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 app.use(cors());
 app.use(express.json());
 
+// --- verifyAdmin middleware (No JWT version) ---
+const verifyAdmin = async (req, res, next) => {
+  const email = req.query.email;
+  if (!email) {
+    return res.status(401).send({ message: 'Unauthenticated Access' });
+  }
+
+  const query = { email: email };
+  const user = await usersCollection.findOne(query);
+
+  if (user?.role !== 'admin') {
+    return res.status(403).send({ message: 'Forbidden Access' });
+  }
+
+  next();
+};
+
 // --- Database Connection ---
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.4k43auc.mongodb.net/?appName=Cluster0`;
 const client = new MongoClient(uri, {
@@ -72,7 +89,7 @@ async function run() {
     });
 
     // Update User Role
-    app.patch('/users/role/:id', async (req, res) => {
+    app.patch('/users/role/:id', verifyAdmin, async (req, res) => {
       const filter = { _id: new ObjectId(req.params.id) };
       res.send(
         await usersCollection.updateOne(filter, {
@@ -82,7 +99,7 @@ async function run() {
     });
 
     // Update User Status (Active/Block)
-    app.patch('/users/status/:id', async (req, res) => {
+    app.patch('/users/status/:id', verifyAdmin, async (req, res) => {
       const filter = { _id: new ObjectId(req.params.id) };
       res.send(
         await usersCollection.updateOne(filter, {
@@ -222,7 +239,7 @@ async function run() {
     });
 
     // Admin Dashboard Stats
-    app.get('/admin-stats', async (req, res) => {
+    app.get('/admin-stats', verifyAdmin, async (req, res) => {
       try {
         const totalBooks = await booksCollection.estimatedDocumentCount();
         const totalUsers = await usersCollection.estimatedDocumentCount();
@@ -393,7 +410,7 @@ async function run() {
     // ==========================================
 
     // এডমিনের জন্য সব রিভিউ দেখা (ModerateReviews পেজের জন্য)
-    app.get('/reviews/admin', async (req, res) => {
+    app.get('/reviews/admin', verifyAdmin, async (req, res) => {
       try {
         // সব রিভিউ আনবে এবং নতুনগুলো আগে দেখাবে
         const result = await reviewsCollection
@@ -417,7 +434,7 @@ async function run() {
     });
 
     // রিভিউ ডিলিট করা
-    app.delete('/reviews/:id', async (req, res) => {
+    app.delete('/reviews/:id', verifyAdmin, async (req, res) => {
       try {
         const id = req.params.id;
         const result = await reviewsCollection.deleteOne({
@@ -484,7 +501,7 @@ async function run() {
     });
 
     // Approve Review & Update Book Rating
-    app.patch('/reviews/approve/:id', async (req, res) => {
+    app.patch('/reviews/approve/:id', verifyAdmin, async (req, res) => {
       try {
         const id = req.params.id;
         const review = await reviewsCollection.findOne({
@@ -561,7 +578,6 @@ async function run() {
     // ৬. Activity Feed (কমিউনিটি আপডেট)
     app.get('/activities', async (req, res) => {
       try {
-        // রিভিউ কালেকশন থেকে লেটেস্ট ৫-১০টি অ্যাক্টিভিটি আনা
         const reviews = await reviewsCollection
           .find()
           .sort({ lastUpdated: -1 })
