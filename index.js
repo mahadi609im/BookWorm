@@ -32,6 +32,8 @@ async function run() {
     // ==========================================
     // 1. User Management
     // ==========================================
+
+    // Get all users or filter by role
     app.get('/users', async (req, res) => {
       const role = req.query.role;
       let query = {};
@@ -40,30 +42,36 @@ async function run() {
       res.send(result);
     });
 
+    // Get single user by email
     app.get('/users/:email', async (req, res) => {
       const email = req.params.email;
       const result = await usersCollection.findOne({ email });
       res.send(result);
     });
 
+    // Save or Initialize user on Login
     app.post('/users', async (req, res) => {
       const user = req.body;
-      const existingUser = await usersCollection.findOne({ email: user.email });
-      if (existingUser)
-        return res.send({ message: 'User exists', insertedId: null });
+      const query = { email: user.email };
+      const existingUser = await usersCollection.findOne(query);
 
-      const newUser = {
+      if (existingUser) {
+        return res.send({ message: 'User already exists', insertedId: null });
+      }
+
+      const result = await usersCollection.insertOne({
         ...user,
         role: 'user',
         status: 'active',
-        joined: new Date(),
-        annualGoal: 0,
         booksReadThisYear: 0,
+        annualGoal: 0,
+        joined: new Date().toISOString(),
         createdAt: new Date(),
-      };
-      res.send(await usersCollection.insertOne(newUser));
+      });
+      res.send(result);
     });
 
+    // Update User Role
     app.patch('/users/role/:id', async (req, res) => {
       const filter = { _id: new ObjectId(req.params.id) };
       res.send(
@@ -73,6 +81,7 @@ async function run() {
       );
     });
 
+    // Update User Status (Active/Block)
     app.patch('/users/status/:id', async (req, res) => {
       const filter = { _id: new ObjectId(req.params.id) };
       res.send(
@@ -82,6 +91,7 @@ async function run() {
       );
     });
 
+    // Update Annual Reading Goal
     app.patch('/users/goal/:email', async (req, res) => {
       const filter = { email: req.params.email };
       res.send(
@@ -91,83 +101,120 @@ async function run() {
       );
     });
 
-    // Profile update
-
+    // Update Profile Info
     app.patch('/users/update/:email', async (req, res) => {
-      const email = req.params.email;
       const { displayName, photoURL } = req.body;
-      const filter = { email: email };
-      const updateDoc = {
-        $set: {
-          displayName: displayName,
-          photoURL: photoURL,
-        },
-      };
-      const result = await usersCollection.updateOne(filter, updateDoc);
+      const filter = { email: req.params.email };
+      const result = await usersCollection.updateOne(filter, {
+        $set: { displayName, photoURL },
+      });
       res.send(result);
     });
 
     // ==========================================
     // 2. Book Management
     // ==========================================
+
+    // Add new book (Admin)
     app.post('/books', async (req, res) => {
-      const book = {
-        ...req.body,
-        createdAt: new Date(),
-        shelvedCount: 0,
-        averageRating: 0,
-        totalReviews: 0,
-      };
-      res.send(await booksCollection.insertOne(book));
+      try {
+        const book = {
+          ...req.body,
+          rating: parseFloat(req.body.rating) || 0,
+          createdAt: new Date(),
+          shelvedCount: 0,
+          averageRating: 0,
+          totalReviews: 0,
+        };
+        const result = await booksCollection.insertOne(book);
+        res.status(201).send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Error adding book', error });
+      }
     });
 
+    // Get books with Search, Multi-Genre, and Sort filters
     app.get('/books', async (req, res) => {
-      const { search, genre, sort, minRating } = req.query;
-      let query = {};
-      if (search)
-        query.$or = [
-          { title: { $regex: search, $options: 'i' } },
-          { author: { $regex: search, $options: 'i' } },
-        ];
-      if (genre) query.genre = genre;
-      if (minRating) query.averageRating = { $gte: parseFloat(minRating) };
+      try {
+        const { search, genre, sort, minRating } = req.query;
+        let query = {};
 
-      let sortObj = {};
-      if (sort === 'rating') sortObj = { averageRating: -1 };
-      else if (sort === 'mostShelved') sortObj = { shelvedCount: -1 };
-      else sortObj = { createdAt: -1 };
+        if (search) {
+          query.$or = [
+            { title: { $regex: search, $options: 'i' } },
+            { author: { $regex: search, $options: 'i' } },
+          ];
+        }
 
-      res.send(await booksCollection.find(query).sort(sortObj).toArray());
+        if (genre) {
+          query.genre = { $in: genre.split(',') };
+        }
+
+        if (minRating) {
+          query.rating = { $gte: parseFloat(minRating) };
+        }
+
+        let sortObj = { createdAt: -1 };
+        if (sort === 'rating') sortObj = { rating: -1 };
+        if (sort === 'mostShelved') sortObj = { shelvedCount: -1 };
+
+        const result = await booksCollection
+          .find(query)
+          .sort(sortObj)
+          .toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Error fetching books', error });
+      }
     });
 
+    // Get book details with approved reviews
     app.get('/books/:id', async (req, res) => {
-      res.send(
-        await booksCollection.findOne({ _id: new ObjectId(req.params.id) })
-      );
+      try {
+        const id = req.params.id;
+        const result = await booksCollection
+          .aggregate([
+            { $match: { _id: new ObjectId(id) } },
+            {
+              $lookup: {
+                from: 'reviews',
+                let: { bookIdStr: { $toString: '$_id' } },
+                pipeline: [
+                  {
+                    $match: {
+                      $expr: {
+                        $and: [
+                          { $eq: ['$bookId', '$$bookIdStr'] },
+                          { $eq: ['$status', 'approved'] },
+                        ],
+                      },
+                    },
+                  },
+                  { $sort: { createdAt: -1 } },
+                ],
+                as: 'reviews',
+              },
+            },
+          ])
+          .toArray();
+
+        if (result.length === 0)
+          return res.status(404).send({ message: 'Book not found' });
+        res.send(result[0]);
+      } catch (error) {
+        res.status(500).send({ message: 'Error fetching book details', error });
+      }
     });
 
-    // Book Update API
-    app.patch('/books/:id', async (req, res) => {
-      const id = req.params.id;
-      const updatedData = { ...req.body };
-      delete updatedData._id;
-
-      const result = await booksCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: updatedData }
-      );
-      res.send(result);
-    });
-
+    // Delete Book and its dependencies
     app.delete('/books/:id', async (req, res) => {
       try {
         const id = req.params.id;
-        const query = { _id: new ObjectId(id) };
-
         await reviewsCollection.deleteMany({ bookId: id });
-
-        const result = await booksCollection.deleteOne(query);
-
+        await shelfCollection.deleteMany({ bookId: id });
+        const result = await booksCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
         res.send(result);
       } catch (error) {
         res.status(500).send({ message: 'Error deleting book', error });
@@ -175,203 +222,282 @@ async function run() {
     });
 
     // ==========================================
-    // 3. Genre Management (Full CRUD)
+    // 3. Reading Tracker (Library)
     // ==========================================
-    app.get('/genres', async (req, res) => {
-      res.send(await genresCollection.find().toArray());
-    });
 
-    app.post('/genres', async (req, res) => {
-      res.send(await genresCollection.insertOne(req.body));
-    });
-
-    app.patch('/genres/:id', async (req, res) => {
-      const id = req.params.id;
-      const update = { ...req.body };
-      delete update._id;
-      res.send(
-        await genresCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: update }
-        )
-      );
-    });
-
-    app.delete('/genres/:id', async (req, res) => {
-      res.send(
-        await genresCollection.deleteOne({ _id: new ObjectId(req.params.id) })
-      );
-    });
-
-    // ==========================================
-    // 4. Reading Tracker & Recommendations
-    // ==========================================
+    // Add or Update book in User Shelf
     app.patch('/users/shelf', async (req, res) => {
-      const { email, bookId, shelfType, progress, bookData } = req.body;
-      const query = { userEmail: email, bookId: bookId };
+      try {
+        const { email, bookId, shelfType, progress, bookData } = req.body;
+        const query = { userEmail: email, bookId: bookId };
+        const existingEntry = await shelfCollection.findOne(query);
+
+        const totalPageCount = parseInt(bookData?.totalPage || 0);
+        const finalProgress =
+          shelfType === 'read' ? totalPageCount : parseInt(progress || 0);
+
+        const updateDoc = {
+          $set: {
+            userEmail: email,
+            bookId,
+            shelfType,
+            progress: finalProgress,
+            bookTitle: bookData?.title,
+            cover: bookData?.cover,
+            genre: bookData?.genre,
+            author: bookData?.author,
+            totalPage: totalPageCount,
+            updatedAt: new Date(),
+          },
+        };
+
+        const result = await shelfCollection.updateOne(query, updateDoc, {
+          upsert: true,
+        });
+
+        // Increment shelvedCount if newly added
+        if (result.upsertedCount > 0) {
+          await booksCollection.updateOne(
+            { _id: new ObjectId(bookId) },
+            { $inc: { shelvedCount: 1 } }
+          );
+        }
+
+        // Increment booksReadThisYear if status changed to 'read'
+        if (
+          shelfType === 'read' &&
+          (!existingEntry || existingEntry.shelfType !== 'read')
+        ) {
+          await usersCollection.updateOne(
+            { email },
+            { $inc: { booksReadThisYear: 1 } }
+          );
+        }
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Shelf update failed', error });
+      }
+    });
+
+    // Update Progress from Library & Auto-complete
+    app.patch('/library/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const { progress } = req.body;
+        const filter = { _id: new ObjectId(id) };
+        const shelfItem = await shelfCollection.findOne(filter);
+
+        if (!shelfItem)
+          return res.status(404).send({ message: 'Book not found in library' });
+
+        const updateDoc = {
+          $set: {
+            progress: parseInt(progress),
+            updatedAt: new Date(),
+          },
+        };
+
+        // If progress reaches total pages, change status to 'read' and update user stats
+        if (
+          parseInt(progress) >= shelfItem.totalPage &&
+          shelfItem.shelfType !== 'read'
+        ) {
+          updateDoc.$set.shelfType = 'read';
+          await usersCollection.updateOne(
+            { email: shelfItem.userEmail },
+            { $inc: { booksReadThisYear: 1 } }
+          );
+        }
+
+        const result = await shelfCollection.updateOne(filter, updateDoc);
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Progress update failed', error });
+      }
+    });
+
+    // Remove book from Library
+    app.delete('/my-library/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const item = await shelfCollection.findOne({ _id: new ObjectId(id) });
+
+        if (item) {
+          // Decrement counters
+          await booksCollection.updateOne(
+            { _id: new ObjectId(item.bookId) },
+            { $inc: { shelvedCount: -1 } }
+          );
+          if (item.shelfType === 'read') {
+            await usersCollection.updateOne(
+              { email: item.userEmail },
+              { $inc: { booksReadThisYear: -1 } }
+            );
+          }
+        }
+
+        const result = await shelfCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+        res.send(result);
+      } catch (error) {
+        res
+          .status(500)
+          .send({ message: 'Failed to remove from library', error });
+      }
+    });
+
+    // Get User Library
+    app.get('/my-library/:email', async (req, res) => {
+      const result = await shelfCollection
+        .find({ userEmail: req.params.email })
+        .sort({ updatedAt: -1 })
+        .toArray();
+      res.send(result);
+    });
+
+    // ==========================================
+    // 4. Reviews & Stats
+    // ==========================================
+
+    // এডমিনের জন্য সব রিভিউ দেখা (ModerateReviews পেজের জন্য)
+    app.get('/reviews/admin', async (req, res) => {
+      try {
+        // সব রিভিউ আনবে এবং নতুনগুলো আগে দেখাবে
+        const result = await reviewsCollection
+          .find()
+          .sort({ lastUpdated: -1 })
+          .toArray();
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Error fetching reviews', error });
+      }
+    });
+
+    // নির্দিষ্ট বইয়ের জন্য রিভিউ দেখা (বইয়ের ডিটেইলস পেজের জন্য)
+    app.get('/reviews/:bookId', async (req, res) => {
+      const bookId = req.params.bookId;
+      const result = await reviewsCollection
+        .find({ bookId: bookId, status: 'approved' })
+        .sort({ lastUpdated: -1 })
+        .toArray();
+      res.send(result);
+    });
+
+    // রিভিউ ডিলিট করা
+    app.delete('/reviews/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const result = await reviewsCollection.deleteOne({
+          _id: new ObjectId(id),
+        });
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: 'Error deleting review', error });
+      }
+    });
+
+    // Submit Review (Updated with auto-rating calculation)
+    app.post('/reviews', async (req, res) => {
+      const review = req.body;
+      const query = {
+        bookId: review.bookId,
+        userEmail: review.userEmail,
+      };
 
       const updateDoc = {
         $set: {
-          userEmail: email,
-          bookId,
-          shelfType,
-          progress: progress || 0,
-          bookTitle: bookData.title,
-          cover: bookData.cover,
-          genre: bookData.genre,
-          author: bookData.author,
-          updatedAt: new Date(),
+          userName: review.userName,
+          userImage: review.userImage,
+          rating: review.rating,
+          comment: review.comment,
+          date: review.date,
+          status: 'approved',
+          bookTitle: review.bookTitle,
+          lastUpdated: new Date(),
         },
       };
 
-      const result = await shelfCollection.updateOne(query, updateDoc, {
-        upsert: true,
-      });
-
-      // Update Books Count & User Stats if book is marked as "Read"
-      if (shelfType === 'read') {
-        await usersCollection.updateOne(
-          { email },
-          { $inc: { booksReadThisYear: 1 } }
-        );
-      }
-
-      if (result.upsertedCount > 0) {
-        await booksCollection.updateOne(
-          { _id: new ObjectId(bookId) },
-          { $inc: { shelvedCount: 1 } }
-        );
-      }
-      res.send(result);
-    });
-
-    app.get('/my-library/:email', async (req, res) => {
-      res.send(
-        await shelfCollection.find({ userEmail: req.params.email }).toArray()
-      );
-    });
-
-    app.get('/recommendations/:email', async (req, res) => {
-      const email = req.params.email;
-      const userRead = await shelfCollection
-        .find({ userEmail: email, shelfType: 'read' })
-        .toArray();
-      const readIds = userRead.map(b => new ObjectId(b.bookId));
-
-      let query = { _id: { $nin: readIds } };
-      if (userRead.length >= 3) {
-        const favGenres = [...new Set(userRead.map(b => b.genre))];
-        query.genre = { $in: favGenres };
-      }
-
-      const result = await booksCollection
-        .find(query)
-        .sort({ averageRating: -1 })
-        .limit(15)
-        .toArray();
-      res.send(result);
-    });
-
-    // ==========================================
-    // 5. Review Management (with Avg Rating Logic)
-    // ==========================================
-    app.post('/reviews', async (req, res) => {
-      res.send(
-        await reviewsCollection.insertOne({
-          ...req.body,
-          status: 'pending',
-          createdAt: new Date(),
-        })
-      );
-    });
-
-    app.get('/reviews/admin', async (req, res) => {
-      res.send(
-        await reviewsCollection.find().sort({ createdAt: -1 }).toArray()
-      );
-    });
-
-    app.patch('/reviews/approve/:id', async (req, res) => {
-      const id = req.params.id;
-      const review = await reviewsCollection.findOne({ _id: new ObjectId(id) });
-
-      await reviewsCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { status: 'approved' } }
-      );
-
-      // Recalculate Average Rating for the Book
-      const allReviews = await reviewsCollection
-        .find({ bookId: review.bookId, status: 'approved' })
-        .toArray();
-      const avg =
-        allReviews.reduce((acc, r) => acc + r.rating, 0) / allReviews.length;
-
-      await booksCollection.updateOne(
-        { _id: new ObjectId(review.bookId) },
-        {
-          $set: {
-            averageRating: parseFloat(avg.toFixed(1)),
-            totalReviews: allReviews.length,
-          },
-        }
-      );
-      res.send({ success: true });
-    });
-
-    app.delete('/reviews/:id', async (req, res) => {
-      res.send(
-        await reviewsCollection.deleteOne({ _id: new ObjectId(req.params.id) })
-      );
-    });
-
-    // ==========================================
-    // 6. Stats & Charts (Public Endpoints)
-    // ==========================================
-
-    // Admin Dashboard Stats: যে কেউ এই লিঙ্ক থেকে স্ট্যাটস দেখতে পারবে
-    app.get('/admin-stats', async (req, res) => {
       try {
-        const totalBooks = await booksCollection.estimatedDocumentCount();
-        const totalUsers = await usersCollection.estimatedDocumentCount();
-        const pendingReviews = await reviewsCollection.countDocuments({
-          status: 'pending',
+        // ১. রিভিউ সেভ বা আপডেট করা
+        const result = await reviewsCollection.updateOne(query, updateDoc, {
+          upsert: true,
         });
 
-        // Genre Breakdown: চার্টের জন্য জেনার অনুযায়ী ডাটা প্রসেস
-        const genreStats = await booksCollection
-          .aggregate([
-            {
-              $group: {
-                _id: '$genre',
-                count: { $sum: 1 },
-              },
-            },
-          ])
+        // ২. এই বইয়ের সব approved রিভিউর গড় রেটিং বের করা
+        const allReviews = await reviewsCollection
+          .find({ bookId: review.bookId, status: 'approved' })
           .toArray();
 
-        res.send({
-          totalBooks,
-          totalUsers,
-          pendingReviews,
-          genreStats,
-        });
+        const totalReviews = allReviews.length;
+        const avg =
+          allReviews.reduce((acc, r) => acc + r.rating, 0) / totalReviews;
+
+        // ৩. বইয়ের মেইন কালেকশনে রেটিং আপডেট করে দেওয়া
+        await booksCollection.updateOne(
+          { _id: new ObjectId(review.bookId) },
+          {
+            $set: {
+              averageRating: parseFloat(avg.toFixed(1)),
+              rating: parseFloat(avg.toFixed(1)), // ফিল্টারিং এর জন্য
+              totalReviews: totalReviews,
+            },
+          }
+        );
+
+        res.send(result);
       } catch (error) {
-        res.status(500).send({ message: 'Admin stats failed', error });
+        res.status(500).send({ message: 'Review update failed', error });
       }
     });
 
-    // User Dashboard Stats: ইউজারের ইমেইল অনুযায়ী স্ট্যাটস (টোকেন ছাড়া)
+    // Approve Review & Update Book Rating
+    app.patch('/reviews/approve/:id', async (req, res) => {
+      try {
+        const id = req.params.id;
+        const review = await reviewsCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        if (!review)
+          return res.status(404).send({ message: 'Review not found' });
+
+        await reviewsCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status: 'approved' } }
+        );
+
+        const allReviews = await reviewsCollection
+          .find({ bookId: review.bookId, status: 'approved' })
+          .toArray();
+        const avg =
+          allReviews.reduce((acc, r) => acc + r.rating, 0) / allReviews.length;
+
+        await booksCollection.updateOne(
+          { _id: new ObjectId(review.bookId) },
+          {
+            $set: {
+              averageRating: parseFloat(avg.toFixed(1)),
+              rating: parseFloat(avg.toFixed(1)),
+              totalReviews: allReviews.length,
+            },
+          }
+        );
+
+        res.send({ success: true });
+      } catch (error) {
+        res.status(500).send({ message: 'Approval failed', error });
+      }
+    });
+
+    // User Dashboard Analytics
     app.get('/user-stats/:email', async (req, res) => {
       try {
         const email = req.params.email;
-
         const user = await usersCollection.findOne({ email });
         const shelves = await shelfCollection
           .find({ userEmail: email })
           .toArray();
-
-        // User Genre Analytics: পাই চার্ট ডাটা
         const genreData = await shelfCollection
           .aggregate([
             { $match: { userEmail: email } },
@@ -382,9 +508,8 @@ async function run() {
         res.send({
           annualGoal: user?.annualGoal || 0,
           booksRead: user?.booksReadThisYear || 0,
-          currentlyReading: shelves.filter(
-            s => s.shelfType === 'reading' || s.shelfType === 'reading'
-          ).length,
+          currentlyReading: shelves.filter(s => s.shelfType === 'reading')
+            .length,
           genreData,
         });
       } catch (error) {
@@ -393,30 +518,43 @@ async function run() {
     });
 
     // ==========================================
-    // 7. Tutorials
+    // 5. General APIs (Genres, Tutorials)
     // ==========================================
-    app.get('/tutorials', async (req, res) => {
-      res.send(await tutorialsCollection.find().sort({ _id: -1 }).toArray());
-    });
+    app.get('/genres', async (req, res) =>
+      res.send(await genresCollection.find().toArray())
+    );
+    app.get('/tutorials', async (req, res) =>
+      res.send(await tutorialsCollection.find().sort({ _id: -1 }).toArray())
+    );
 
-    app.post('/tutorials', async (req, res) => {
-      res.send(
-        await tutorialsCollection.insertOne({
-          ...req.body,
-          createdAt: new Date(),
-        })
-      );
-    });
+    // ৬. Activity Feed (কমিউনিটি আপডেট)
+    app.get('/activities', async (req, res) => {
+      try {
+        // রিভিউ কালেকশন থেকে লেটেস্ট ৫-১০টি অ্যাক্টিভিটি আনা
+        const reviews = await reviewsCollection
+          .find()
+          .sort({ lastUpdated: -1 })
+          .limit(5)
+          .toArray();
 
-    app.delete('/tutorials/:id', async (req, res) => {
-      res.send(
-        await tutorialsCollection.deleteOne({
-          _id: new ObjectId(req.params.id),
-        })
-      );
+        // ফরম্যাট করা ডাটা পাঠানো যা ফ্রন্টএন্ডের সাথে মিলবে
+        const activities = reviews.map(r => ({
+          _id: r._id,
+          userName: r.userName,
+          userAvatar: r.userImage,
+          actionText: `rated ${r.rating} stars to`,
+          bookTitle: r.bookTitle,
+          type: 'rate',
+          createdAt: 'Just now',
+        }));
+
+        res.send(activities);
+      } catch (error) {
+        res.status(500).send({ message: 'Error fetching activities', error });
+      }
     });
   } finally {
-    // Keep connection alive
+    // Keep client running
   }
 }
 run().catch(console.dir);
